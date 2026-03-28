@@ -712,14 +712,161 @@
         const calmCircleText = document.getElementById('calmCircleText');
         const closeCalmBtn = document.getElementById('closeCalmBtn');
 
+        // --- NEW: Breathing Sound Effects (Web Audio API) ---
+        let breathAudioCtx = null;
+        let oscillators = [];
+        let masterGain = null;
+        let filterNode = null;
+        let noiseSource = null;
+        let noiseGain = null;
+
+        function initBreathAudio() {
+            if (!breathAudioCtx) {
+                breathAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (breathAudioCtx.state === 'suspended') {
+                breathAudioCtx.resume();
+            }
+        }
+
+        function startBreathSound() {
+            initBreathAudio();
+            stopBreathSound(true); // Immediate stop if any
+
+            // Master volume for singing bowl
+            masterGain = breathAudioCtx.createGain();
+            masterGain.gain.value = 0; // Initialize at 0
+            masterGain.connect(breathAudioCtx.destination);
+
+            // Singing bowl frequencies (432Hz healing frequency based)
+            // 216Hz and 218Hz create a slow 2Hz beating for meditation
+            const freqs = [216, 218, 432]; 
+            oscillators = freqs.map((freq, i) => {
+                let osc = breathAudioCtx.createOscillator();
+                let oscGain = breathAudioCtx.createGain();
+                osc.type = i === 2 ? 'triangle' : 'sine'; // Top harmonic is triangle for slight brightness
+                osc.frequency.value = freq;
+                oscGain.gain.value = i === 2 ? 0.05 : 0.3; // Balance
+                
+                osc.connect(oscGain);
+                oscGain.connect(masterGain);
+                osc.start();
+                return { osc, gain: oscGain };
+            });
+
+            // Set up wind/ocean noise for breath cue
+            filterNode = breathAudioCtx.createBiquadFilter();
+            noiseGain = breathAudioCtx.createGain();
+            
+            const bufferSize = breathAudioCtx.sampleRate * 2;
+            const noiseBuffer = breathAudioCtx.createBuffer(1, bufferSize, breathAudioCtx.sampleRate);
+            const output = noiseBuffer.getChannelData(0);
+            for (let i = 0; i < bufferSize; i++) {
+                output[i] = Math.random() * 2 - 1; // White noise
+            }
+
+            noiseSource = breathAudioCtx.createBufferSource();
+            noiseSource.buffer = noiseBuffer;
+            noiseSource.loop = true;
+            
+            filterNode.type = 'lowpass';
+            filterNode.frequency.value = 100; // Start very muffled
+            
+            noiseGain.gain.value = 0.0; 
+
+            noiseSource.connect(filterNode);
+            filterNode.connect(noiseGain);
+            noiseGain.connect(breathAudioCtx.destination);
+
+            noiseSource.start();
+        }
+
+        function modulateBreathSound(phase) {
+            if (!masterGain || !filterNode || !noiseGain) return;
+
+            const now = breathAudioCtx.currentTime;
+            
+            masterGain.gain.cancelScheduledValues(now);
+            filterNode.frequency.cancelScheduledValues(now);
+            noiseGain.gain.cancelScheduledValues(now);
+
+            // The singing bowl pulses gently while the "wind" filter opens and closes
+            if (phase === 'inhale') {
+                masterGain.gain.setTargetAtTime(0.25, now, 1.5);
+                
+                // Wind swooshes up
+                filterNode.frequency.setTargetAtTime(600, now, 1.5);
+                noiseGain.gain.setTargetAtTime(0.08, now, 1.5);
+            } else if (phase === 'hold') {
+                masterGain.gain.setTargetAtTime(0.15, now, 1.0);
+                
+                // Wind holds steady and soft
+                filterNode.frequency.setTargetAtTime(300, now, 1.0);
+                noiseGain.gain.setTargetAtTime(0.04, now, 1.0);
+            } else if (phase === 'exhale') {
+                masterGain.gain.setTargetAtTime(0.05, now, 2.5);
+                
+                // Wind swooshes down
+                filterNode.frequency.setTargetAtTime(100, now, 2);
+                noiseGain.gain.setTargetAtTime(0.01, now, 2.5);
+            }
+        }
+
+        function stopBreathSound(immediate = false) {
+            const now = breathAudioCtx ? breathAudioCtx.currentTime : 0;
+            
+            if (masterGain) {
+                masterGain.gain.cancelScheduledValues(now);
+                if (immediate) masterGain.gain.value = 0;
+                else masterGain.gain.setTargetAtTime(0, now, 0.2);
+            }
+            if (noiseGain) {
+                noiseGain.gain.cancelScheduledValues(now);
+                if (immediate) noiseGain.gain.value = 0;
+                else noiseGain.gain.setTargetAtTime(0, now, 0.2);
+            }
+
+            const cleanUp = () => {
+                oscillators.forEach(o => {
+                    try { o.osc.stop(); o.osc.disconnect(); o.gain.disconnect(); } catch(e) {}
+                });
+                oscillators = [];
+                if (noiseSource) {
+                    try { noiseSource.stop(); noiseSource.disconnect(); } catch(e) {}
+                    noiseSource = null;
+                }
+                if (filterNode) { filterNode.disconnect(); filterNode = null; }
+                if (masterGain) { masterGain.disconnect(); masterGain = null; }
+                if (noiseGain) { noiseGain.disconnect(); noiseGain = null; }
+            };
+
+            if (immediate) {
+                cleanUp();
+            } else {
+                setTimeout(cleanUp, 1000);
+            }
+        }
+
         function startCalmAnimation() {
             let seconds = 0;
             calmCircleText.textContent = "吸氣...";
+            startBreathSound();
+            modulateBreathSound('inhale');
+
             calmAnimationInterval = setInterval(() => {
                 seconds = (seconds + 1) % 14;
-                if (seconds === 0) calmCircleText.textContent = "吸氣...";
-                else if (seconds === 4) calmCircleText.textContent = "屏息...";
-                else if (seconds === 8) calmCircleText.textContent = "吐氣...";
+                if (seconds === 0) {
+                    calmCircleText.textContent = "吸氣...";
+                    modulateBreathSound('inhale');
+                }
+                else if (seconds === 4) {
+                    calmCircleText.textContent = "屏息...";
+                    modulateBreathSound('hold');
+                }
+                else if (seconds === 8) {
+                    calmCircleText.textContent = "吐氣...";
+                    modulateBreathSound('exhale');
+                }
             }, 1000);
         }
 
@@ -731,6 +878,7 @@
         closeCalmBtn.addEventListener('click', () => {
             calmOverlay.style.display = 'none';
             clearInterval(calmAnimationInterval);
+            stopBreathSound();
         });
 
         // --- Event Listeners ---
